@@ -53,6 +53,7 @@ POSSIBILITY OF SUCH DAMAGES.
 
 #ifdef __cplusplus
   #include <assert.h>
+  #include <chrono>
   #include <sstream>
 #endif
 
@@ -63,6 +64,30 @@ POSSIBILITY OF SUCH DAMAGES.
 // there is one.  The return value is equal to errnum.
 namespace
 {
+  double ndiPerfElapsedMs(const std::chrono::steady_clock::time_point& start)
+  {
+    return std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - start).count();
+  }
+
+  struct NDICommandPerfGuard
+  {
+    ndicapi* Api;
+    std::chrono::steady_clock::time_point Start;
+
+    explicit NDICommandPerfGuard(ndicapi* api)
+      : Api(api),
+        Start(std::chrono::steady_clock::now())
+    {
+      memset(&Api->LastCommandPerf, 0, sizeof(Api->LastCommandPerf));
+    }
+
+    ~NDICommandPerfGuard()
+    {
+      Api->LastCommandPerf.TotalMs = ndiPerfElapsedMs(Start);
+    }
+  };
+
   int ndiSetError(ndicapi* pol, int errnum)
   {
     pol->ErrorCode = errnum;
@@ -990,8 +1015,7 @@ ndicapiExport ndicapi* ndiOpenNetwork(const char* hostname, int port)
   }
 
   memset(device, 0, sizeof(ndicapi));
-  device->Hostname = new char[strlen(hostname) + 1];
-  device->Hostname = strncpy(device->Hostname, hostname, strlen(hostname));
+  device->Hostname = (char*)malloc(strlen(hostname) + 1);
   device->Port = port;
   device->Socket = socket;
   device->SerialDevice = NDI_INVALID_HANDLE;
@@ -1002,7 +1026,31 @@ ndicapiExport ndicapi* ndiOpenNetwork(const char* hostname, int port)
   device->Reply = (char*)malloc(2048);
   device->ReplyNoCRC = (char*)malloc(2048);
 
+  if (device->Hostname == 0 || device->Command == 0 || device->Reply == 0 || device->ReplyNoCRC == 0)
+  {
+    if (device->Hostname)
+    {
+      free(device->Hostname);
+    }
+    if (device->Command)
+    {
+      free(device->Command);
+    }
+    if (device->Reply)
+    {
+      free(device->Reply);
+    }
+    if (device->ReplyNoCRC)
+    {
+      free(device->ReplyNoCRC);
+    }
+    ndiSocketClose(socket);
+    free(device);
+    return NULL;
+  }
+
   // initialize the allocated memory
+  strcpy(device->Hostname, hostname);
   memset(device->Command, 0, 2048);
   memset(device->Reply, 0, 2048);
   memset(device->ReplyNoCRC, 0, 2048);
@@ -1864,7 +1912,7 @@ void parseFrameComponent(ndicapi* api, const char* data, unsigned short itemOpti
     *   Frame Sequence Index  2 bytes
     *   Frame Status          2 bytes - For bits 0 to 15, the field uses the same codes as the 6D Port/Tool Status, but only the ones which are applicable to the frame as a whole.
     *   Frame Number          4 bytes
-    *   Frame Timestamp*      8 bytes struct timespec • Bytes 0-3: seconds since the start of the Unix epoch (1-Jan-1970 00:00:00 UTC) • Bytes 4-7: nanoseconds
+    *   Frame Timestamp*      8 bytes struct timespec ï¿½ Bytes 0-3: seconds since the start of the Unix epoch (1-Jan-1970 00:00:00 UTC) ï¿½ Bytes 4-7: nanoseconds
     *   Frame Data            Payload Variable - General Binary Format
     *   
     * ------------------------------
@@ -1882,7 +1930,7 @@ void parseFrameComponent(ndicapi* api, const char* data, unsigned short itemOpti
     * 
     * ------------------------------
     * 3D Data Component
-    *   Tool Handle Reference 2 bytes - 0xffff for “stray” 3D
+    *   Tool Handle Reference 2 bytes - 0xffff for ï¿½strayï¿½ 3D
     *   Number of 3Ds         2 bytes
     *   Status                1 byte - See below
     *   -reserved-            1 byte
@@ -1895,7 +1943,7 @@ void parseFrameComponent(ndicapi* api, const char* data, unsigned short itemOpti
     *     0x02 Not used: exceeded max marker angle
     *     0x03 Not used: exceeded max marker error for tool
     *     0x04 Not used: Out of Volume
-    *     0x05 Out of Volume – used in 6D
+    *     0x05 Out of Volume ï¿½ used in 6D
     *     0x06 Possible phantom marker (in volume, applies to stray markers only)
     *     0x07 Saturated (in or out of volume, not used in 6D)
     *     0x08 Saturated and out of volume (not used in 6D)
@@ -2678,6 +2726,17 @@ ndicapiExport char* ndiCommand(ndicapi* pol, const char* format, ...)
 }
 
 //----------------------------------------------------------------------------
+ndicapiExport void ndiGetLastCommandPerf(ndicapi* pol, ndiCommandPerf* outPerf)
+{
+  if (pol == NULL || outPerf == NULL)
+  {
+    return;
+  }
+
+  *outPerf = pol->LastCommandPerf;
+}
+
+//----------------------------------------------------------------------------
 ndicapiExport char* ndiCommandVA(ndicapi* api, const char* format, va_list ap)
 {
   int i, bytes, commandLength;
@@ -2687,6 +2746,7 @@ ndicapiExport char* ndiCommandVA(ndicapi* api, const char* format, va_list ap)
   char* reply;
   char* commandReply;
   int errorCode = 0;
+  NDICommandPerfGuard perfGuard(api);
 
   command = api->Command;       // text sent to ndicapi
   reply = api->Reply;     // text received from ndicapi
@@ -2718,9 +2778,18 @@ ndicapiExport char* ndiCommandVA(ndicapi* api, const char* format, va_list ap)
     if (api->SerialDevice != NDI_INVALID_HANDLE)
     {
       ndiSerialComm(api->SerialDevice, 9600, "8N1", 0);
-      ndiSerialFlush(api->SerialDevice, NDI_IOFLUSH);
+      {
+        const std::chrono::steady_clock::time_point flushStart = std::chrono::steady_clock::now();
+        ndiSerialFlush(api->SerialDevice, NDI_IOFLUSH);
+        api->LastCommandPerf.FlushMs += ndiPerfElapsedMs(flushStart);
+      }
       ndiSerialBreak(api->SerialDevice);
-      bytes = ndiSerialRead(api->SerialDevice, reply, 2047, false, &errorCode);
+      {
+        const std::chrono::steady_clock::time_point readStart = std::chrono::steady_clock::now();
+        bytes = ndiSerialRead(api->SerialDevice, reply, 2047, false, &errorCode);
+        api->LastCommandPerf.ReadMs += ndiPerfElapsedMs(readStart);
+      }
+      api->LastCommandPerf.ReadBytes = (bytes > 0 ? bytes : 0);
     }
     else
     {
@@ -2865,7 +2934,9 @@ ndicapiExport char* ndiCommandVA(ndicapi* api, const char* format, va_list ap)
     {
       // flush the input buffer, because anything that we haven't read
       //   yet is garbage left over by a previously failed command
+      const std::chrono::steady_clock::time_point flushStart = std::chrono::steady_clock::now();
       ndiSerialFlush(api->SerialDevice, NDI_IFLUSH);
+      api->LastCommandPerf.FlushMs += ndiPerfElapsedMs(flushStart);
     }
     else
     {
@@ -2875,7 +2946,10 @@ ndicapiExport char* ndiCommandVA(ndicapi* api, const char* format, va_list ap)
     // send the command to the Measurement System
     if (api->SerialDevice != NDI_INVALID_HANDLE)
     {
+      const std::chrono::steady_clock::time_point writeStart = std::chrono::steady_clock::now();
       bytes = ndiSerialWrite(api->SerialDevice, command, i);
+      api->LastCommandPerf.WriteMs += ndiPerfElapsedMs(writeStart);
+      api->LastCommandPerf.WriteBytes = (bytes > 0 ? bytes : 0);
     }
     else
     {
@@ -2896,7 +2970,10 @@ ndicapiExport char* ndiCommandVA(ndicapi* api, const char* format, va_list ap)
     {
       if (api->SerialDevice != NDI_INVALID_HANDLE)
       {
+        const std::chrono::steady_clock::time_point readStart = std::chrono::steady_clock::now();
         bytes = ndiSerialRead(api->SerialDevice, reply, 2047, isBinary, &errorCode);
+        api->LastCommandPerf.ReadMs += ndiPerfElapsedMs(readStart);
+        api->LastCommandPerf.ReadBytes = (bytes > 0 ? bytes : 0);
       }
       else
       {
