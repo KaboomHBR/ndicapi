@@ -984,8 +984,7 @@ ndicapiExport ndicapi* ndiOpenNetwork(const char* hostname, int port)
   }
 
   memset(device, 0, sizeof(ndicapi));
-  device->Hostname = new char[strlen(hostname) + 1];
-  device->Hostname = strncpy(device->Hostname, hostname, strlen(hostname));
+  device->Hostname = (char*)malloc(strlen(hostname) + 1);
   device->Port = port;
   device->Socket = socket;
   device->SerialDevice = NDI_INVALID_HANDLE;
@@ -996,7 +995,31 @@ ndicapiExport ndicapi* ndiOpenNetwork(const char* hostname, int port)
   device->Reply = (char*)malloc(2048);
   device->ReplyNoCRC = (char*)malloc(2048);
 
+  if (device->Hostname == 0 || device->Command == 0 || device->Reply == 0 || device->ReplyNoCRC == 0)
+  {
+    if (device->Hostname)
+    {
+      free(device->Hostname);
+    }
+    if (device->Command)
+    {
+      free(device->Command);
+    }
+    if (device->Reply)
+    {
+      free(device->Reply);
+    }
+    if (device->ReplyNoCRC)
+    {
+      free(device->ReplyNoCRC);
+    }
+    ndiSocketClose(socket);
+    free(device);
+    return NULL;
+  }
+
   // initialize the allocated memory
+  strcpy(device->Hostname, hostname);
   memset(device->Command, 0, 2048);
   memset(device->Reply, 0, 2048);
   memset(device->ReplyNoCRC, 0, 2048);
