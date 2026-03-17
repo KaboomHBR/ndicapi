@@ -57,6 +57,19 @@ POSSIBILITY OF SUCH DAMAGES.
 #define NDI_MAX_HANDLES 24
 
 //----------------------------------------------------------------------------
+struct ndiCommandPerf
+{
+  double TotalMs;
+  double FlushMs;
+  double WriteMs;
+  double ReadMs;
+  int WriteBytes;
+  int ReadBytes;
+};
+
+typedef struct ndiCommandPerf ndiCommandPerf;
+
+//----------------------------------------------------------------------------
 // Structure for holding ndicapi data.
 struct ndicapi
 {
@@ -184,6 +197,7 @@ struct ndicapi
   float BxPassiveStrayPosition[240][3]; // hold up to 240 stray markers
 
   int BxSystemStatus;
+  ndiCommandPerf LastCommandPerf;
 };
 
 typedef struct ndicapi ndicapi;
@@ -352,6 +366,11 @@ ndicapiExport char* ndiCommand(ndicapi* pol, const char* format, ...);
   is described in the standard C header file "stdarg.h".
 */
 ndicapiExport char* ndiCommandVA(ndicapi* pol, const char* format, va_list ap);
+
+/*! \ingroup NDIMethods
+  Retrieve timing information for the most recent command.
+*/
+ndicapiExport void ndiGetLastCommandPerf(ndicapi* pol, ndiCommandPerf* outPerf);
 
 /*! \ingroup NDIMethods
   Error callback type for use with ndiSetErrorCallback().

@@ -53,6 +53,7 @@ POSSIBILITY OF SUCH DAMAGES.
 
 #ifdef __cplusplus
   #include <assert.h>
+  #include <chrono>
   #include <sstream>
 #endif
 
@@ -63,6 +64,30 @@ POSSIBILITY OF SUCH DAMAGES.
 // there is one.  The return value is equal to errnum.
 namespace
 {
+  double ndiPerfElapsedMs(const std::chrono::steady_clock::time_point& start)
+  {
+    return std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - start).count();
+  }
+
+  struct NDICommandPerfGuard
+  {
+    ndicapi* Api;
+    std::chrono::steady_clock::time_point Start;
+
+    explicit NDICommandPerfGuard(ndicapi* api)
+      : Api(api),
+        Start(std::chrono::steady_clock::now())
+    {
+      memset(&Api->LastCommandPerf, 0, sizeof(Api->LastCommandPerf));
+    }
+
+    ~NDICommandPerfGuard()
+    {
+      Api->LastCommandPerf.TotalMs = ndiPerfElapsedMs(Start);
+    }
+  };
+
   int ndiSetError(ndicapi* pol, int errnum)
   {
     pol->ErrorCode = errnum;
@@ -2254,6 +2279,17 @@ ndicapiExport char* ndiCommand(ndicapi* pol, const char* format, ...)
 }
 
 //----------------------------------------------------------------------------
+ndicapiExport void ndiGetLastCommandPerf(ndicapi* pol, ndiCommandPerf* outPerf)
+{
+  if (pol == NULL || outPerf == NULL)
+  {
+    return;
+  }
+
+  *outPerf = pol->LastCommandPerf;
+}
+
+//----------------------------------------------------------------------------
 ndicapiExport char* ndiCommandVA(ndicapi* api, const char* format, va_list ap)
 {
   int i, bytes, commandLength;
@@ -2263,6 +2299,7 @@ ndicapiExport char* ndiCommandVA(ndicapi* api, const char* format, va_list ap)
   char* reply;
   char* commandReply;
   int errorCode = 0;
+  NDICommandPerfGuard perfGuard(api);
 
   command = api->Command;       // text sent to ndicapi
   reply = api->Reply;     // text received from ndicapi
@@ -2294,9 +2331,18 @@ ndicapiExport char* ndiCommandVA(ndicapi* api, const char* format, va_list ap)
     if (api->SerialDevice != NDI_INVALID_HANDLE)
     {
       ndiSerialComm(api->SerialDevice, 9600, "8N1", 0);
-      ndiSerialFlush(api->SerialDevice, NDI_IOFLUSH);
+      {
+        const std::chrono::steady_clock::time_point flushStart = std::chrono::steady_clock::now();
+        ndiSerialFlush(api->SerialDevice, NDI_IOFLUSH);
+        api->LastCommandPerf.FlushMs += ndiPerfElapsedMs(flushStart);
+      }
       ndiSerialBreak(api->SerialDevice);
-      bytes = ndiSerialRead(api->SerialDevice, reply, 2047, false, &errorCode);
+      {
+        const std::chrono::steady_clock::time_point readStart = std::chrono::steady_clock::now();
+        bytes = ndiSerialRead(api->SerialDevice, reply, 2047, false, &errorCode);
+        api->LastCommandPerf.ReadMs += ndiPerfElapsedMs(readStart);
+      }
+      api->LastCommandPerf.ReadBytes = (bytes > 0 ? bytes : 0);
     }
     else
     {
@@ -2438,7 +2484,9 @@ ndicapiExport char* ndiCommandVA(ndicapi* api, const char* format, va_list ap)
     {
       // flush the input buffer, because anything that we haven't read
       //   yet is garbage left over by a previously failed command
+      const std::chrono::steady_clock::time_point flushStart = std::chrono::steady_clock::now();
       ndiSerialFlush(api->SerialDevice, NDI_IFLUSH);
+      api->LastCommandPerf.FlushMs += ndiPerfElapsedMs(flushStart);
     }
     else
     {
@@ -2448,7 +2496,10 @@ ndicapiExport char* ndiCommandVA(ndicapi* api, const char* format, va_list ap)
     // send the command to the Measurement System
     if (api->SerialDevice != NDI_INVALID_HANDLE)
     {
+      const std::chrono::steady_clock::time_point writeStart = std::chrono::steady_clock::now();
       bytes = ndiSerialWrite(api->SerialDevice, command, i);
+      api->LastCommandPerf.WriteMs += ndiPerfElapsedMs(writeStart);
+      api->LastCommandPerf.WriteBytes = (bytes > 0 ? bytes : 0);
     }
     else
     {
@@ -2469,7 +2520,10 @@ ndicapiExport char* ndiCommandVA(ndicapi* api, const char* format, va_list ap)
     {
       if (api->SerialDevice != NDI_INVALID_HANDLE)
       {
+        const std::chrono::steady_clock::time_point readStart = std::chrono::steady_clock::now();
         bytes = ndiSerialRead(api->SerialDevice, reply, 2047, isBinary, &errorCode);
+        api->LastCommandPerf.ReadMs += ndiPerfElapsedMs(readStart);
+        api->LastCommandPerf.ReadBytes = (bytes > 0 ? bytes : 0);
       }
       else
       {
