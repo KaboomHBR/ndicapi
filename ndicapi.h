@@ -197,6 +197,24 @@ struct ndicapi
   float BxPassiveStrayPosition[240][3]; // hold up to 240 stray markers
 
   int BxSystemStatus;
+  unsigned short Bx2GBFVersion;
+  unsigned short Bx2ComponentCount;
+  unsigned int Bx2ReplyLength;
+  unsigned char Bx2FrameType;
+  unsigned int Bx2FrameNumber;
+  float Bx2Transforms[NDI_MAX_HANDLES][8];
+  unsigned char Bx2FrameSequenceIndex;
+  unsigned char Bx2Timestamp[8];
+  unsigned int Bx2HandleCount;
+  unsigned short Bx2Handles[NDI_MAX_HANDLES];
+  unsigned short Bx2HandlesStatus[NDI_MAX_HANDLES];
+  bool Bx2HandleAveragingEnabled[NDI_MAX_HANDLES];
+  unsigned short Bx2SystemAlerts[256][2]; // Type and value together
+  unsigned int Bx2SystemAlertsCount;
+
+  unsigned short Bx2_3DMarkerCount[NDI_MAX_HANDLES];
+  char Bx2_3DMarkerStatus[NDI_MAX_HANDLES][20];
+  float Bx2_3DMarkerPosition[NDI_MAX_HANDLES][20][3]; // a tool can have up to 20 markers
   ndiCommandPerf LastCommandPerf;
 };
 
@@ -1642,6 +1660,80 @@ called with the NDI_XFORMS_AND_STATUS (0x0001) bit set in the reply mode.
 ndicapiExport int ndiGetBXSystemStatus(ndicapi* pol);
 
 /*! \ingroup GetMethods
+Get the transformation for the specified port. The first four numbers are a quaternion,
+the next three numbers are the coordinates in millimeters, and the final number is a
+unitless error estimate.
+
+\param pol       valid NDI device handle
+\param ph        valid port handle in range 0x01 to 0xFF
+\param transform space for the 8 numbers in the transformation
+
+\return one of the following:
+- NDI_OKAY if successful
+- NDI_DISABLED if tool port is nonexistent or disabled
+- NDI_MISSING if tool transform cannot be computed
+
+<p>If NDI_DISABLED or NDI_MISSING is returned, then the values in the supplied transform array will be left unchanged.
+
+The transformations for each of the port handles remain the same until the next BX2 command is sent to device.
+*/
+ndicapiExport int ndiGetBX2Transform(ndicapi* pol, int portHandle, float transform[8]);
+
+/*! \ingroup GetMethods
+Get the 16-bit status value for the specified port handle.
+
+\param pol         valid NDI device handle
+\param portHandle  valid port handle in range 0x01 to 0xFF
+
+This information is updated each time that the BX2 command is sent to the device.
+*/
+ndicapiExport unsigned short ndiGetBX2PortStatus(ndicapi* pol, int portHandle);
+
+/*! \ingroup GetMethods
+Get the length of the last BX2 command reply
+
+\param pol       valid NDI device handle
+\param portHandle  valid port handle in range 0x01 to 0xFF
+
+\return the number of bytes in the reply
+*/
+ndicapiExport unsigned int ndiGetBX2ReplyLength(ndicapi* pol);
+
+/*! \ingroup GetMethods
+Get an 16-bit status bitfield for the system.
+
+\param pol       valid NDI device handle
+\param index     the alert to access, use ndiGetBX2SystemAlertsCount
+
+<p>The system status information is updated whenever the BX2 command is called
+*/
+ndicapiExport unsigned short* ndiGetBX2SystemAlert(ndicapi* pol, int index);
+ndicapiExport int ndiGetBX2SystemAlertsCount(ndicapi* pol);
+
+/*! \ingroup GetMethods
+Get the camera frame number for the latest BX2 frame.
+
+\param pol       valid NDI device handle
+
+\return a 32-bit frame number, or zero if no information was available
+
+This information is updated each time that the BX2 command is sent to the device.
+*/
+ndicapiExport unsigned int ndiGetBX2Frame(ndicapi* pol);
+
+/*! \ingroup GetMethods
+Get the camera frame number for the latest BX2 frame.
+
+\param pol         valid NDI device handle
+\param portHandle  valid port handle in range 0x01 to 0xFF
+
+\return a boolean indicating if averaging is enabled for the given handle
+
+This information is updated each time that the BX2 command is sent to the device.
+*/
+ndicapiExport bool ndiGetBX2HandleAveragingEnabled(ndicapi* pol, int portHandle);
+
+/*! \ingroup GetMethods
   Get the 8-bit status value for the specified port.
 
   \param pol       valid NDI device handle
@@ -2006,6 +2098,23 @@ ndicapiExport void* ndiHexDecode(void* data, const char* cp, int n);
 #define NDI_COMMAND_VER_FAILED    0x0203  /*!<\brief VER command failed */
 /*\}*/
 
+/* ndi GBF component IDs */
+/*\{*/
+#define NDI_COMPONENTID_FRAME      0x0001
+#define NDI_COMPONENTID_6D         0x0002
+#define NDI_COMPONENTID_3D         0x0003
+#define NDI_COMPONENTID_1D         0x0004
+#define NDI_COMPONENTID_2D         0x0005
+// 06 - reserved
+// 07 - reserved
+#define NDI_COMPONENTID_LINE_SEP   0x0008
+#define NDI_COMPONENTID_3D_ERROR   0x0009
+#define NDI_COMPONENTID_IMAGE      0x0010
+// 11 to 16 - reserved
+#define NDI_COMPONENTID_UV         0x0011
+#define NDI_COMPONENTID_SYS_ALERT  0x0012
+/*\}*/
+
 
 /* ndiCOMM() baud rates */
 /*\{*/
@@ -2077,6 +2186,39 @@ ndicapiExport void* ndiHexDecode(void* data, const char* cp, int n);
 #define  NDI_ACTIVE_STRAY_MISSING       0x02
 #define  NDI_ACTIVE_STRAY_OUT_OF_VOLUME 0x08
 /*\}*/
+
+/* ndiGetBX2PortStatus() return value bits */
+/*\{*/
+#define NDI_BX2_ENABLED               0 // Enabled
+#define NDI_BX2_PARTIAL_VIEW          3 // Tool is partially out of the characterized measurement volume
+#define NDI_BX2_PARTIAL_AVG           5 // Data is partially averaged; averaging depth is less than specified
+#define NDI_BX2_OUT_OF_VOLUME         9 // Tool is out of the characterized measurement volume
+
+// The following error codes are reported only if the tool is missing
+#define NDI_BX2_TOO_FEW_MARKERS       13 // Too few markers detected
+#define NDI_BX2_IR_INTERFERENCE       14 // IR interference (a large bright IR object)
+#define NDI_BX2_BAD_XFORM_FIT         17 // Bad transformation fit
+#define NDI_BX2_BUFFER_LIMIT          18 // Data buffer limitation (too much data; for example, too many markers)
+#define NDI_BX2_ALGO_LIMIT            19 // Algorithm limitation (processing requires more buffer than is available)
+#define NDI_BX2_CANT_KEEP_UP          20 // Fell behind while processing
+#define NDI_BX2_OUT_OF_SYNC           21 // Position sensors out of synch
+#define NDI_BX2_PROC_EXCEP            22 // Processing exception
+#define NDI_BX2_TOOL_MISSING          31 // Tool is missing
+#define NDI_BX2_TRACKING_NOT_ENABLED  32 // Tracking is not enabled for this tool
+#define NDI_BX2_TOOL_UNPLUGGED        33 // Tool has been unplugged from the System Control Unit
+/*\}*/
+
+#define NDI_BX2_MISSING_BIT 0x0100
+#define NDI_BX2_AVG_BIT     0x0200
+
+#define NDI_SYS_ALERT_FAULT 0x01
+#define NDI_SYS_ALERT_ALERT 0x02
+#define NDI_SYS_ALERT_EVENT 0x04
+
+#define NDI_SYS_EVENT_TOOL_CONNECTED      1
+#define NDI_SYS_EVENT_TOOL_DISCONNECTED   2
+#define NDI_SYS_EVENT_HW_CHANGED          5
+#define NDI_SYS_EVENT_PTP_MASTER_CHANGED  6
 
 /* return values that give the reason behind missing data */
 /*\{*/
